@@ -85,13 +85,19 @@ app.get('/api/auth/me', getCurrentUser, (req, res) => {
     res.json(userWithoutPassword);
 });
 
+// Users: List (Admin)
+app.get('/api/users', getCurrentUser, getAdminUser, async (req, res) => {
+    const [rows] = await pool.execute('SELECT id, email, name, role, status, created_at FROM users');
+    res.json(rows);
+});
+
 // Projects: List
 app.get('/api/projects', getCurrentUser, async (req, res) => {
     const [rows] = await pool.execute('SELECT * FROM projects ORDER BY created_at DESC');
     res.json(rows);
 });
 
-// Projects: Create
+// Projects: Create (Admin)
 app.post('/api/projects', getCurrentUser, getAdminUser, async (req, res) => {
     const { name, description } = req.body;
     const id = uuidv4();
@@ -103,6 +109,75 @@ app.post('/api/projects', getCurrentUser, getAdminUser, async (req, res) => {
     );
     
     res.json({ id, name, description, created_by, status: 'active' });
+});
+
+// Projects: Update (Admin)
+app.put('/api/projects/:id', getCurrentUser, getAdminUser, async (req, res) => {
+    const { id } = req.params;
+    const { name, description, status } = req.body;
+    
+    await pool.execute(
+        'UPDATE projects SET name = ?, description = ?, status = ? WHERE id = ?',
+        [name, description, status || 'active', id]
+    );
+    
+    res.json({ id, name, description, status: status || 'active' });
+});
+
+// Projects: Delete (Admin)
+app.delete('/api/projects/:id', getCurrentUser, getAdminUser, async (req, res) => {
+    const { id } = req.params;
+    
+    // Optional: Check if there are tasks or time entries associated with this project
+    // For now, simple delete
+    await pool.execute('DELETE FROM projects WHERE id = ?', [id]);
+    
+    res.json({ success: true, message: 'Project deleted' });
+});
+
+// Tasks: List
+app.get('/api/tasks', getCurrentUser, async (req, res) => {
+    const { project_id } = req.query;
+    let query = 'SELECT * FROM tasks';
+    const params = [];
+    if (project_id) {
+        query += ' WHERE project_id = ?';
+        params.push(project_id);
+    }
+    query += ' ORDER BY created_at DESC';
+    const [rows] = await pool.execute(query, params);
+    res.json(rows);
+});
+
+// Tasks: Create (Admin)
+app.post('/api/tasks', getCurrentUser, getAdminUser, async (req, res) => {
+    const { name, description, project_id } = req.body;
+    const id = uuidv4();
+    await pool.execute(
+        'INSERT INTO tasks (id, name, description, project_id) VALUES (?, ?, ?, ?)',
+        [id, name, description, project_id]
+    );
+    res.json({ id, name, description, project_id, status: 'active' });
+});
+
+// Tasks: Update (Admin)
+app.put('/api/tasks/:id', getCurrentUser, getAdminUser, async (req, res) => {
+    const { id } = req.params;
+    const { name, description, project_id, status } = req.body;
+    
+    await pool.execute(
+        'UPDATE tasks SET name = ?, description = ?, project_id = ?, status = ? WHERE id = ?',
+        [name, description, project_id, status || 'active', id]
+    );
+    
+    res.json({ id, name, description, project_id, status: status || 'active' });
+});
+
+// Tasks: Delete (Admin)
+app.delete('/api/tasks/:id', getCurrentUser, getAdminUser, async (req, res) => {
+    const { id } = req.params;
+    await pool.execute('DELETE FROM tasks WHERE id = ?', [id]);
+    res.json({ success: true, message: 'Task deleted' });
 });
 
 // Time Entries: List
@@ -197,6 +272,62 @@ app.post('/api/timer/stop', getCurrentUser, async (req, res) => {
     await pool.execute('UPDATE timer_sessions SET is_active = FALSE WHERE id = ?', [timer.id]);
 
     res.json({ id: entryId, duration, status: 'stopped' });
+});
+
+// Timer: Active (Admin)
+app.get('/api/admin/active-timers', getCurrentUser, getAdminUser, async (req, res) => {
+    const [rows] = await pool.execute(`
+        SELECT ts.*, u.name as user_name, u.email as user_email, p.name as project_name, t.name as task_name
+        FROM timer_sessions ts
+        JOIN users u ON ts.user_id = u.id
+        LEFT JOIN projects p ON ts.project_id = p.id
+        LEFT JOIN tasks t ON ts.task_id = t.id
+        WHERE ts.is_active = TRUE
+    `);
+    res.json(rows);
+});
+
+// Timesheets: List
+app.get('/api/timesheets', getCurrentUser, async (req, res) => {
+    let query = 'SELECT * FROM timesheets';
+    const params = [];
+    if (req.user.role === 'employee') {
+        query += ' WHERE user_id = ?';
+        params.push(req.user.id);
+    }
+    const [rows] = await pool.execute(query, params);
+    res.json(rows);
+});
+
+// Notifications: List
+app.get('/api/notifications', getCurrentUser, async (req, res) => {
+    const [rows] = await pool.execute('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
+    res.json(rows);
+});
+
+// Dashboard: Stats
+app.get('/api/dashboard/stats', getCurrentUser, async (req, res) => {
+    if (req.user.role === 'admin') {
+        const [[{total_employees}]] = await pool.execute('SELECT COUNT(*) as total_employees FROM users WHERE role = "employee"');
+        const [[{active_employees}]] = await pool.execute('SELECT COUNT(*) as active_employees FROM users WHERE role = "employee" AND status = "active"');
+        const [[{pending_timesheets}]] = await pool.execute('SELECT COUNT(*) as pending_timesheets FROM timesheets WHERE status = "submitted"');
+        const [[{total_projects}]] = await pool.execute('SELECT COUNT(*) as total_projects FROM projects');
+        const [[{active_timers}]] = await pool.execute('SELECT COUNT(*) as active_timers FROM timer_sessions WHERE is_active = TRUE');
+
+        res.json({
+            total_employees,
+            active_employees,
+            pending_timesheets,
+            total_projects,
+            active_timers
+        });
+    } else {
+        const today = new Date().toISOString().split('T')[0];
+        const [[{today_seconds}]] = await pool.execute('SELECT SUM(duration) as today_seconds FROM time_entries WHERE user_id = ? AND date = ?', [req.user.id, today]);
+        res.json({
+            today_hours: Math.round((today_seconds || 0) / 3600 * 100) / 100
+        });
+    }
 });
 
 // --- Server Init ---
