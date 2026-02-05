@@ -19,10 +19,10 @@ app.use(cors({
 
 // MySQL connection pool
 const pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
+    host: process.env.DB_HOST || 'srv1508.hstgr.io',
+    user: process.env.DB_USER || 'u585115589_omnig',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'time_tracking',
+    database: process.env.DB_NAME || 'u585115589_omnig',
     port: parseInt(process.env.DB_PORT || '3306'),
     waitForConnections: true,
     connectionLimit: 10,
@@ -77,6 +77,12 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign({ sub: user.id }, SECRET_KEY, { expiresIn: `${ACCESS_TOKEN_EXPIRE_MINUTES}m` });
     const { password: _, ...userWithoutPassword } = user;
     res.json({ token, user: userWithoutPassword });
+});
+
+// Auth: Get current user
+app.get('/api/auth/me', getCurrentUser, (req, res) => {
+    const { password: _, ...userWithoutPassword } = req.user;
+    res.json(userWithoutPassword);
 });
 
 // Projects: List
